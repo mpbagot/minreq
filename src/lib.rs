@@ -15,7 +15,8 @@
 //! # Additional features
 //!
 //! Since the crate is supposed to be minimal in terms of
-//! dependencies, there are no default features, and optional
+//! dependencies, there are no default features, with the create compiling as no_std
+//! when optional functionality is not enabled. Optional
 //! functionality can be enabled by specifying features for `minreq`
 //! dependency in `Cargo.toml`:
 //!
@@ -24,7 +25,16 @@
 //! minreq = { version = "2.13.5-alpha", features = ["punycode"] }
 //! ```
 //!
-//! Below is the list of all available features.
+//! Below is the list of all available features. Enabling any of these
+//! features will require pulling in std, so be aware of this before enabling
+//! any of them.
+//!
+//! ## `tcp`
+//!
+//! This feature provides an unsecured implementation of Connection in the
+//! [`TCPConnection`](struct.TCPConnection.html) struct. This implementation
+//! provides HTTP over TCP capabilities using Rust's std::net::TCPStream. The
+//! TCPConnection implementation provides timeout capabilities.
 //!
 //! ## `https` or `https-rustls`
 //!
@@ -67,17 +77,12 @@
 //! [`openssl-probe`](https://crates.io/crates/openssl-probe) crate to
 //! auto-detect root certificates installed in common locations.
 //!
-//! ## `json-using-serde`
+//! ## A note on the https features
 //!
-//! This feature allows both serialize and deserialize JSON payload
-//! using the [`serde_json`](https://crates.io/crates/serde_json)
-//! crate.
-//!
-//! [`Request`](struct.Request.html) and
-//! [`Response`](struct.Response.html) expose
-//! [`with_json()`](struct.Request.html#method.with_json) and
-//! [`json()`](struct.Response.html#method.json) for constructing the
-//! struct from JSON and extracting the JSON body out, respectively.
+//! Each of the https features above provide a secured implementation of
+//! the Connection trait in the [`TLSConnection`](struct.TLSConnection.html)
+//! struct. This provides a secured HTTPS connection using the corresponding
+//! underlying library based on the specific variant of feature that is enabled.
 //!
 //! ## `punycode`
 //!
@@ -229,11 +234,15 @@
 // std::io::Error::other was added in 1.74, so occurrences of this lint can't be
 // fixed before our MSRV gets that high.
 #![allow(clippy::io_other_error)]
+#![cfg_attr(not(feature = "tcp"), no_std)]
 
-#[cfg(feature = "json-using-serde")]
-extern crate serde;
-#[cfg(feature = "json-using-serde")]
-extern crate serde_json;
+#[cfg(feature = "tcp")]
+extern crate std;
+
+#[cfg(not(feature = "tcp"))]
+extern crate alloc;
+#[cfg(not(feature = "tcp"))]
+extern crate core;
 
 mod connection;
 mod error;
@@ -242,7 +251,13 @@ mod http_url;
 mod proxy;
 mod request;
 mod response;
+mod util;
 
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+pub use connection::TLSConnection;
+pub use connection::{ensure_ascii_host, handle_redirects, Connection, CoreRead, HttpStream};
+#[cfg(feature = "tcp")]
+pub use connection::{CoreReader, TCPConnection};
 pub use error::*;
 #[cfg(feature = "proxy")]
 pub use proxy::*;

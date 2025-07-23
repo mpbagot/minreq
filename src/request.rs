@@ -2,10 +2,14 @@ use crate::connection::Connection;
 use crate::http_url::{HttpUrl, Port};
 #[cfg(feature = "proxy")]
 use crate::proxy::Proxy;
+use crate::util::VecWriter;
 use crate::{Error, Response, ResponseLazy};
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Write;
+#[cfg(not(feature = "tcp"))]
+use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
+#[cfg(not(feature = "tcp"))]
+use core::{fmt, fmt::Write, mem::swap};
+#[cfg(feature = "tcp")]
+use std::{collections::BTreeMap, fmt, fmt::Write, mem::swap, string::String, vec::Vec};
 
 /// A URL type for requests.
 pub type URL = String;
@@ -75,7 +79,7 @@ pub struct Request {
     pub(crate) method: Method,
     url: URL,
     params: String,
-    headers: HashMap<String, String>,
+    headers: BTreeMap<String, String>,
     body: Option<Vec<u8>>,
     pub(crate) timeout: Option<u64>,
     pub(crate) max_headers_size: Option<usize>,
@@ -102,7 +106,7 @@ impl Request {
             method,
             url: url.into(),
             params: String::new(),
-            headers: HashMap::new(),
+            headers: BTreeMap::new(),
             body: None,
             timeout: None,
             max_headers_size: None,
@@ -164,26 +168,6 @@ impl Request {
         self.params.push('=');
         self.params.push_str(&value);
         self
-    }
-
-    /// Converts given argument to JSON and sets it as body.
-    ///
-    /// # Errors
-    ///
-    /// Returns
-    /// [`SerdeJsonError`](enum.Error.html#variant.SerdeJsonError) if
-    /// Serde runs into a problem when converting `body` into a
-    /// string.
-    #[cfg(feature = "json-using-serde")]
-    pub fn with_json<T: serde::ser::Serialize>(mut self, body: &T) -> Result<Request, Error> {
-        self.headers.insert(
-            "Content-Type".to_string(),
-            "application/json; charset=UTF-8".to_string(),
-        );
-        match serde_json::to_string(&body) {
-            Ok(json) => Ok(self.with_body(json)),
-            Err(err) => Err(Error::SerdeJsonError(err)),
-        }
     }
 
     /// Sets the request timeout in seconds.
@@ -253,6 +237,24 @@ impl Request {
         self
     }
 
+    /// Return the request as a newly allocated u8 vector
+    pub fn as_bytes(self) -> Result<Vec<u8>, Error> {
+        let parsed_request = ParsedRequest::new(self)?;
+        Ok(parsed_request.as_bytes())
+    }
+
+    /// Fill a preallocated buffer with the request content.
+    /// If the buffer is insufficiently large to hold the request
+    /// content, it will be reallocated.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if we run into an error while parsing the request
+    pub fn fill_buffer(self, buf: &mut Vec<u8>) -> Result<(), Error> {
+        let parsed_request = ParsedRequest::new(self)?;
+        Ok(parsed_request.fill_buffer(buf))
+    }
+
     /// Sends this request to the host.
     ///
     /// # Errors
@@ -263,24 +265,15 @@ impl Request {
     /// [`minreq::Error`](enum.Error.html) except
     /// [`SerdeJsonError`](enum.Error.html#variant.SerdeJsonError) and
     /// [`InvalidUtf8InBody`](enum.Error.html#variant.InvalidUtf8InBody).
-    pub fn send(self) -> Result<Response, Error> {
+    pub fn send<T: Connection>(self, conn: T) -> Result<Response, Error> {
         let parsed_request = ParsedRequest::new(self)?;
+        #[cfg(not(any(feature = "rustls", feature = "openssl", feature = "native-tls")))]
         if parsed_request.url.https {
-            #[cfg(any(feature = "rustls", feature = "openssl", feature = "native-tls"))]
-            {
-                let is_head = parsed_request.config.method == Method::Head;
-                let response = Connection::new(parsed_request).send_https()?;
-                Response::create(response, is_head)
-            }
-            #[cfg(not(any(feature = "rustls", feature = "openssl", feature = "native-tls")))]
-            {
-                Err(Error::HttpsFeatureNotEnabled)
-            }
-        } else {
-            let is_head = parsed_request.config.method == Method::Head;
-            let response = Connection::new(parsed_request).send()?;
-            Response::create(response, is_head)
+            return Err(Error::HttpsFeatureNotEnabled);
         }
+        let is_head = parsed_request.config.method == Method::Head;
+        let response = conn.send(parsed_request)?;
+        Response::create(response, is_head)
     }
 
     /// Sends this request to the host, loaded lazily.
@@ -288,27 +281,27 @@ impl Request {
     /// # Errors
     ///
     /// See [`send`](struct.Request.html#method.send).
-    pub fn send_lazy(self) -> Result<ResponseLazy, Error> {
+    pub fn send_lazy<T: Connection>(self, conn: T) -> Result<ResponseLazy, Error> {
         let parsed_request = ParsedRequest::new(self)?;
+        #[cfg(not(any(feature = "rustls", feature = "openssl", feature = "native-tls")))]
         if parsed_request.url.https {
-            #[cfg(any(feature = "rustls", feature = "openssl", feature = "native-tls"))]
-            {
-                Connection::new(parsed_request).send_https()
-            }
-            #[cfg(not(any(feature = "rustls", feature = "openssl", feature = "native-tls")))]
-            {
-                Err(Error::HttpsFeatureNotEnabled)
-            }
-        } else {
-            Connection::new(parsed_request).send()
+            return Err(Error::HttpsFeatureNotEnabled);
         }
+        conn.send(parsed_request)
     }
 }
 
-pub(crate) struct ParsedRequest {
-    pub(crate) url: HttpUrl,
-    pub(crate) redirects: Vec<HttpUrl>,
-    pub(crate) config: Request,
+/// A parsed out request. Mainly a wrapper arround Request with a properly parsed url.
+/// Required for [`Connection::send()`](trait.Connection.html#method.send) to
+/// produce a final ResponseLazy. Should not be constructed manually, but should only be
+/// instantiated through Request instance methods.
+pub struct ParsedRequest {
+    /// The url of the request
+    pub url: HttpUrl,
+    /// The chain of redirected urls
+    pub redirects: Vec<HttpUrl>,
+    /// The underlying request object
+    pub config: Request,
 }
 
 impl ParsedRequest {
@@ -379,6 +372,11 @@ impl ParsedRequest {
         //   "Although fragment identifiers used within URI references are not
         //   sent in requests..."
 
+        self.head_to_buf(&mut http);
+        http
+    }
+
+    fn head_to_buf<T: Write>(&self, http: &mut T) {
         // Add the request line and the "Host" header
         write!(
             http,
@@ -389,7 +387,7 @@ impl ParsedRequest {
         if let Port::Explicit(port) = self.url.port {
             write!(http, ":{}", port).unwrap();
         }
-        http += "\r\n";
+        write!(http, "\r\n").unwrap();
 
         // Add other headers
         for (k, v) in &self.config.headers {
@@ -413,12 +411,11 @@ impl ParsedRequest {
                 // refer: https://tools.ietf.org/html/rfc7231#section-4.3.8
                 // similar line found for GET, HEAD, CONNECT and DELETE.
 
-                http += "Content-Length: 0\r\n";
+                write!(http, "Content-Length: 0\r\n").unwrap();
             }
         }
 
-        http += "\r\n";
-        http
+        write!(http, "\r\n").unwrap();
     }
 
     /// Returns the HTTP request as bytes, ready to be sent to
@@ -431,20 +428,24 @@ impl ParsedRequest {
         head
     }
 
+    /// Write the HTTP request as bytes to a preallocated buffer
+    pub(crate) fn fill_buffer(&self, buf: &mut Vec<u8>) -> () {
+        let mut writer_buf = VecWriter::new(buf);
+        self.head_to_buf(&mut writer_buf);
+        // Now that the header is done, add
+        if let Some(body) = &self.config.body {
+            buf.extend(body);
+        }
+    }
+
     /// Returns the redirected version of this Request, unless an
     /// infinite redirection loop was detected, or the redirection
     /// limit was reached.
     pub(crate) fn redirect_to(&mut self, url: &str) -> Result<(), Error> {
         if url.contains("://") {
-            let mut url = HttpUrl::parse(url, Some(&self.url)).map_err(|_| {
-                // TODO: Uncomment this for 3.0
-                // Error::InvalidProtocolInRedirect
-                Error::IoError(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "was redirected to an absolute url with an invalid protocol",
-                ))
-            })?;
-            std::mem::swap(&mut url, &mut self.url);
+            let mut url = HttpUrl::parse(url, Some(&self.url))
+                .map_err(|_| Error::InvalidProtocolInRedirect)?;
+            swap(&mut url, &mut self.url);
             self.redirects.push(url);
         } else {
             // The url does not have the protocol part, assuming it's
@@ -453,7 +454,7 @@ impl ParsedRequest {
             self.url.write_base_url_to(&mut absolute_url).unwrap();
             absolute_url.push_str(url);
             let mut url = HttpUrl::parse(&absolute_url, Some(&self.url))?;
-            std::mem::swap(&mut url, &mut self.url);
+            swap(&mut url, &mut self.url);
             self.redirects.push(url);
         }
 
@@ -528,13 +529,14 @@ pub fn patch<T: Into<URL>>(url: T) -> Request {
 #[cfg(test)]
 mod parsing_tests {
 
-    use std::collections::HashMap;
+    use alloc::collections::BTreeMap;
+    use alloc::string::ToString;
 
     use super::{get, ParsedRequest};
 
     #[test]
     fn test_headers() {
-        let mut headers = HashMap::new();
+        let mut headers = BTreeMap::new();
         headers.insert("foo".to_string(), "bar".to_string());
         headers.insert("foo".to_string(), "baz".to_string());
 

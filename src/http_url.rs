@@ -1,16 +1,21 @@
-use std::fmt::{self, Write};
+#[cfg(feature = "tcp")]
+use std::{string::String, fmt::self, fmt::Write};
+#[cfg(not(feature = "tcp"))]
+use core::fmt::{self, Write};
+#[cfg(not(feature = "tcp"))]
+use alloc::string::String;
 
 use crate::Error;
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Port {
+pub enum Port {
     ImplicitHttp,
     ImplicitHttps,
     Explicit(u32),
 }
 
 impl Port {
-    pub(crate) fn port(self) -> u32 {
+    pub fn port(self) -> u32 {
         match self {
             Port::ImplicitHttp => 80,
             Port::ImplicitHttps => 443,
@@ -28,17 +33,17 @@ impl Port {
 /// scheme "://" host [ ":" port ] path [ "?" query ] [ "#" fragment ]
 /// ```
 #[derive(Clone, PartialEq)]
-pub(crate) struct HttpUrl {
+pub struct HttpUrl {
     /// If scheme is "https", true, if "http", false.
-    pub(crate) https: bool,
+    pub https: bool,
     /// `host`
-    pub(crate) host: String,
+    pub host: String,
     /// `[":" port]`
-    pub(crate) port: Port,
+    pub port: Port,
     /// `path ["?" query]` including the `?`.
-    pub(crate) path_and_query: String,
+    pub path_and_query: String,
     /// `["#" fragment]` without the `#`.
-    pub(crate) fragment: Option<String>,
+    pub fragment: Option<String>,
 }
 
 impl HttpUrl {
@@ -55,12 +60,7 @@ impl HttpUrl {
         } else if let Some(after_protocol) = url.strip_prefix("https://") {
             (after_protocol, true)
         } else {
-            // TODO: Uncomment this for 3.0
-            // return Err(Error::InvalidProtocol);
-            return Err(Error::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "was redirected to an absolute url with an invalid protocol",
-            )));
+            return Err(Error::InvalidProtocol);
         };
 
         let mut host = String::new();

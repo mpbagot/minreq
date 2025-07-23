@@ -1,11 +1,46 @@
 use crate::request::ParsedRequest;
 use crate::{Error, Method, ResponseLazy};
+#[cfg(not(feature = "tcp"))]
+use alloc::{boxed::Box, string::String};
+#[cfg(not(feature = "tcp"))]
+use core::time::Duration;
+
+#[cfg(feature = "tcp")]
 use std::env;
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(feature = "tcp")]
 use std::time::{Duration, Instant};
 
-type UnsecuredStream = TcpStream;
+/// The Connection trait. This implements a specific type of connection over which to send
+/// a request.
+pub trait Connection {
+    /// Send a given request, returning a response or error on failure
+    fn send(self, request: ParsedRequest) -> Result<ResponseLazy, Error>;
+}
+
+#[cfg(feature = "tcp")]
+use std::io::{Read, Write};
+#[cfg(feature = "tcp")]
+use std::net::{TcpStream, ToSocketAddrs};
+
+/// A replacement implementation of std::io::Read
+pub trait CoreRead: Send {
+    /// The same as std::io::Read trait implementation, but returns a minreq::Error
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error>;
+}
+#[cfg(feature = "tcp")]
+/// A wrapper struct for unsecured streams to allow them to be used with HTTPStream.
+/// In order to use ResponseLazy::from_stream, a HTTPStream instance is needed.
+/// To make a HTTPStream, you need to implement the trait CoreRead. If you already
+/// have an object that implements std::io::Read, you can wrap it with CoreReader to
+/// automatically implement the required CoreRead trait.
+pub struct CoreReader<T: std::io::Read>(T);
+#[cfg(feature = "tcp")]
+impl<T: std::io::Read + Send> CoreRead for CoreReader<T> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        std::io::Read::read(&mut self.0, buf)
+            .map_err(|err: std::io::Error| (Error::StreamReadError(err.to_string())))
+    }
+}
 
 #[cfg(feature = "rustls")]
 mod rustls_stream;
@@ -30,143 +65,208 @@ mod openssl_stream;
 ))]
 type SecuredStream = openssl_stream::SecuredStream;
 
-pub(crate) enum HttpStream {
-    Unsecured(UnsecuredStream, Option<Instant>),
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+impl CoreRead for SecuredStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        std::io::Read::read(self, buf)
+            .map_err(|err: std::io::Error| (Error::StreamReadError(err.to_string())))
+    }
+}
+
+/// A readable stream of HTTP data. Provided to the
+/// [`from_stream()`](struct.ResponseLazy.html#method.from_stream) constructor
+/// function to generate a complete HTTP Response object.
+pub enum HttpStream {
+    /// A wrapped implementation of the CoreRead trait that produces raw HTTP data.
+    Unsecured(Box<dyn CoreRead>, Option<Duration>),
     #[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
-    Secured(Box<SecuredStream>, Option<Instant>),
+    /// NOTE: Internal use only for TLS connection implementation
+    /// An encrypted readable stream for HTTP data.
+    Secured(Box<SecuredStream>, Option<Duration>),
 }
 
 impl HttpStream {
-    fn create_unsecured(reader: UnsecuredStream, timeout_at: Option<Instant>) -> HttpStream {
-        HttpStream::Unsecured(reader, timeout_at)
+    /// Consume an object that implements CoreRead and an optional timeout to create
+    /// an unsecured readable HTTPStream for use by ResponseLazy.
+    pub fn create_unsecured<T: CoreRead + 'static>(
+        reader: T,
+        timeout_dur: Option<Duration>,
+    ) -> HttpStream {
+        HttpStream::Unsecured(Box::new(reader), timeout_dur)
     }
 
     #[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl"))]
-    fn create_secured(reader: SecuredStream, timeout_at: Option<Instant>) -> HttpStream {
-        HttpStream::Secured(Box::new(reader), timeout_at)
+    /// NOTE: Internal use only for TLS connection implementation
+    /// Consumes a secured readable stream to produce a readable HTTPStream for use
+    /// by ResponseLazy.
+    fn create_secured(reader: SecuredStream, timeout_dur: Option<Duration>) -> HttpStream {
+        HttpStream::Secured(Box::new(reader), timeout_dur)
+    }
+}
+#[cfg(feature = "tcp")]
+impl Read for HttpStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        CoreRead::read(self, buf)
+            .map_err(|err: Error| (std::io::Error::new(std::io::ErrorKind::Other, err.to_string())))
     }
 }
 
-fn timeout_err() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        "the timeout of the request was reached",
-    )
-}
-
-fn timeout_at_to_duration(timeout_at: Option<Instant>) -> Result<Option<Duration>, io::Error> {
+#[cfg(feature = "tcp")]
+/// Converts a timeout instant to a duration w.r.t the current moment. Only used by the TCP implemention
+pub(crate) fn timeout_at_to_duration(
+    timeout_at: Option<Instant>,
+) -> Result<Option<Duration>, Error> {
     if let Some(timeout_at) = timeout_at {
         if let Some(duration) = timeout_at.checked_duration_since(Instant::now()) {
             Ok(Some(duration))
         } else {
-            Err(timeout_err())
+            Err(Error::RequestTimedOut)
         }
     } else {
         Ok(None)
     }
 }
 
-impl Read for HttpStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let timeout = |tcp: &TcpStream, timeout_at: Option<Instant>| -> io::Result<()> {
-            let _ = tcp.set_read_timeout(timeout_at_to_duration(timeout_at)?);
-            Ok(())
-        };
+trait SetTimeout {
+    fn timeout(&self, timeout_dur: Option<Duration>) -> Result<(), Error>;
+}
+// Default timeout
+impl<T: ?Sized + CoreRead> SetTimeout for T {
+    fn timeout(&self, _timeout_dur: Option<Duration>) -> Result<(), Error> {
+        Ok(())
+    }
+}
 
+#[cfg(feature = "tcp")]
+impl SetTimeout for TcpStream {
+    fn timeout(&self, timeout_dur: Option<Duration>) -> Result<(), Error> {
+        let _ = self.set_read_timeout(timeout_dur);
+        Ok(())
+    }
+}
+
+impl CoreRead for HttpStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         let result = match self {
-            HttpStream::Unsecured(inner, timeout_at) => {
-                timeout(inner, *timeout_at)?;
-                inner.read(buf)
+            HttpStream::Unsecured(inner, timeout_dur) => {
+                inner.timeout(*timeout_dur)?;
+                <dyn CoreRead>::read(&mut **inner, buf)
             }
             #[cfg(any(feature = "rustls", feature = "openssl", feature = "native-tls"))]
-            HttpStream::Secured(inner, timeout_at) => {
-                timeout(inner.get_ref(), *timeout_at)?;
-                inner.read(buf)
+            HttpStream::Secured(inner, timeout_dur) => {
+                inner.get_ref().timeout(*timeout_dur)?;
+                // inner.read(buf)
+                <dyn CoreRead>::read(&mut **inner, buf)
             }
         };
         match result {
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // We're a blocking socket, so EWOULDBLOCK indicates a timeout
-                Err(timeout_err())
-            }
+            Err(_e) => Err(Error::RequestTimedOut),
             r => r,
         }
     }
 }
 
-/// A connection to the server for sending
+/// A connection to the server for sending over http
 /// [`Request`](struct.Request.html)s.
-pub struct Connection {
-    request: ParsedRequest,
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+pub struct TLSConnection {
     timeout_at: Option<Instant>,
 }
-
-impl Connection {
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+impl TLSConnection {
     /// Creates a new `Connection`. See [Request] and [ParsedRequest]
     /// for specifics about *what* is being sent.
-    pub(crate) fn new(request: ParsedRequest) -> Connection {
-        let timeout = request
-            .config
-            .timeout
-            .or_else(|| match env::var("MINREQ_TIMEOUT") {
+    pub fn new(timeout: Option<u64>) -> TLSConnection {
+        let timeout = {
+            // No env in no_std, so it's either timeout or none
+            #[cfg(not(feature = "tcp"))]
+            timeout.or_else(None);
+
+            #[cfg(feature = "tcp")]
+            timeout.or_else(|| match env::var("MINREQ_TIMEOUT") {
                 Ok(t) => t.parse::<u64>().ok(),
                 Err(_) => None,
-            });
+            })
+        };
         let timeout_at = timeout.map(|t| Instant::now() + Duration::from_secs(t));
-        Connection {
-            request,
-            timeout_at,
-        }
+        TLSConnection { timeout_at }
     }
-
-    /// Returns the timeout duration for operations that should end at
-    /// timeout and are starting "now".
-    ///
-    /// The Result will be Err if the timeout has already passed.
-    fn timeout(&self) -> Result<Option<Duration>, io::Error> {
-        let timeout = timeout_at_to_duration(self.timeout_at);
-        log::trace!("Timeout requested, it is currently: {:?}", timeout);
-        timeout
-    }
-
+}
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+impl Connection for TLSConnection {
     /// Sends the [`Request`](struct.Request.html), consumes this
     /// connection, and returns a [`Response`](struct.Response.html).
     #[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
-    pub(crate) fn send_https(mut self) -> Result<ResponseLazy, Error> {
+    fn send(self, mut request: ParsedRequest) -> Result<ResponseLazy, Error> {
         enforce_timeout(self.timeout_at, move || {
-            self.request.url.host = ensure_ascii_host(self.request.url.host)?;
+            request.url.host = ensure_ascii_host(request.url.host)?;
 
             #[cfg(feature = "rustls")]
-            let secured_stream = rustls_stream::create_secured_stream(&self)?;
+            let secured_stream = rustls_stream::create_secured_stream(&self, &request)?;
             #[cfg(all(not(feature = "rustls"), feature = "native-tls"))]
-            let secured_stream = native_tls_stream::create_secured_stream(&self)?;
+            let secured_stream = native_tls_stream::create_secured_stream(&self, &request)?;
             #[cfg(all(
                 not(feature = "rustls"),
                 not(feature = "native-tls"),
                 feature = "openssl",
             ))]
-            let secured_stream = openssl_stream::create_secured_stream(&self)?;
+            let secured_stream = openssl_stream::create_secured_stream(&self, &request)?;
 
-            log::trace!("Reading HTTPS response from {}.", self.request.url.host);
+            log::trace!("Reading HTTPS response from {}.", request.url.host);
             let response = ResponseLazy::from_stream(
                 secured_stream,
-                self.request.config.max_headers_size,
-                self.request.config.max_status_line_len,
+                request.config.max_headers_size,
+                request.config.max_status_line_len,
             )?;
 
-            handle_redirects(self, response)
+            handle_redirects(self, request, response)
         })
     }
+}
+#[cfg(any(feature = "rustls", feature = "native-tls", feature = "openssl",))]
+impl TCPConn for TLSConnection {
+    fn get_conn_timeout(&self) -> Option<Instant> {
+        self.timeout_at
+    }
+}
 
+/// A connection to the server for sending over http
+/// [`Request`](struct.Request.html)s.
+#[cfg(feature = "tcp")]
+pub struct TCPConnection {
+    timeout_at: Option<Instant>,
+}
+#[cfg(feature = "tcp")]
+impl TCPConnection {
+    /// Creates a new `Connection`. See [Request] and [ParsedRequest]
+    /// for specifics about *what* is being sent.
+    pub fn new(timeout: Option<u64>) -> TCPConnection {
+        let timeout = {
+            // No env in no_std, so it's either timeout or none
+            #[cfg(not(feature = "tcp"))]
+            timeout.or_else(None);
+
+            #[cfg(feature = "tcp")]
+            timeout.or_else(|| match env::var("MINREQ_TIMEOUT") {
+                Ok(t) => t.parse::<u64>().ok(),
+                Err(_) => None,
+            })
+        };
+        let timeout_at = timeout.map(|t| Instant::now() + Duration::from_secs(t));
+        TCPConnection { timeout_at }
+    }
+}
+#[cfg(feature = "tcp")]
+impl Connection for TCPConnection {
     /// Sends the [`Request`](struct.Request.html), consumes this
     /// connection, and returns a [`Response`](struct.Response.html).
-    pub(crate) fn send(mut self) -> Result<ResponseLazy, Error> {
+    fn send(self, mut request: ParsedRequest) -> Result<ResponseLazy, Error> {
         enforce_timeout(self.timeout_at, move || {
-            self.request.url.host = ensure_ascii_host(self.request.url.host)?;
-            let bytes = self.request.as_bytes();
+            request.url.host = ensure_ascii_host(request.url.host)?;
+            let bytes = request.as_bytes();
 
-            log::trace!("Establishing TCP connection to {}.", self.request.url.host);
-            let mut tcp = self.connect()?;
+            log::trace!("Establishing TCP connection to {}.", request.url.host);
+            let mut tcp = self.connect(&request)?;
 
             // Send request
             log::trace!("Writing HTTP request.");
@@ -175,21 +275,45 @@ impl Connection {
 
             // Receive response
             log::trace!("Reading HTTP response.");
-            let stream = HttpStream::create_unsecured(tcp, self.timeout_at);
+            let stream = HttpStream::create_unsecured(
+                CoreReader(tcp),
+                timeout_at_to_duration(self.timeout_at)?,
+            );
             let response = ResponseLazy::from_stream(
                 stream,
-                self.request.config.max_headers_size,
-                self.request.config.max_status_line_len,
+                request.config.max_headers_size,
+                request.config.max_status_line_len,
             )?;
-            handle_redirects(self, response)
+            handle_redirects(self, request, response)
         })
     }
+}
+#[cfg(feature = "tcp")]
+impl TCPConn for TCPConnection {
+    fn get_conn_timeout(&self) -> Option<Instant> {
+        self.timeout_at
+    }
+}
 
-    fn connect(&self) -> Result<TcpStream, Error> {
+#[cfg(feature = "tcp")]
+trait TCPConn {
+    fn get_conn_timeout(&self) -> Option<Instant>;
+
+    /// Returns the timeout duration for operations that should end at
+    /// timeout and are starting "now".
+    ///
+    /// The Result will be Err if the timeout has already passed.
+    fn timeout(&self) -> Result<Option<Duration>, Error> {
+        let timeout = timeout_at_to_duration(self.get_conn_timeout());
+        log::trace!("Timeout requested, it is currently: {:?}", timeout);
+        timeout
+    }
+
+    fn connect(&self, request: &ParsedRequest) -> Result<TcpStream, Error> {
         let tcp_connect = |host: &str, port: u32| -> Result<TcpStream, Error> {
             let addrs = (host, port as u16)
                 .to_socket_addrs()
-                .map_err(Error::IoError)?;
+                .map_err(|err: std::io::Error| Error::StreamReadError(err.to_string()))?;
             let addrs_count = addrs.len();
 
             // Try all resolved addresses. Return the first one to which we could connect. If all
@@ -209,12 +333,12 @@ impl Connection {
         };
 
         #[cfg(feature = "proxy")]
-        match self.request.config.proxy {
+        match request.config.proxy {
             Some(ref proxy) => {
                 // do proxy things
                 let mut tcp = tcp_connect(&proxy.server, proxy.port)?;
 
-                write!(tcp, "{}", proxy.connect(&self.request)).unwrap();
+                write!(tcp, "{}", proxy.connect(&request)).unwrap();
                 tcp.flush()?;
 
                 let mut proxy_response = Vec::new();
@@ -232,38 +356,31 @@ impl Connection {
 
                 Ok(tcp)
             }
-            None => tcp_connect(&self.request.url.host, self.request.url.port.port()),
+            None => tcp_connect(&request.url.host, request.url.port.port()),
         }
 
         #[cfg(not(feature = "proxy"))]
-        tcp_connect(&self.request.url.host, self.request.url.port.port())
+        tcp_connect(&request.url.host, request.url.port.port())
     }
 }
 
-fn handle_redirects(
-    connection: Connection,
+/// Process request redirection, storing the redirection steps in the given ResponseLazy.
+/// Returns the completed ResponseLazy with the redirection array on success, or an error
+/// on connection read failure.
+pub fn handle_redirects<T: Connection>(
+    connection: T,
+    mut request: ParsedRequest,
     mut response: ResponseLazy,
 ) -> Result<ResponseLazy, Error> {
     let status_code = response.status_code;
     let url = response.headers.get("location");
-    match get_redirect(connection, status_code, url) {
+    match get_redirect(connection, &mut request, status_code, url) {
         NextHop::Redirect(connection) => {
             let connection = connection?;
-            if connection.request.url.https {
-                #[cfg(not(any(
-                    feature = "rustls",
-                    feature = "openssl",
-                    feature = "native-tls"
-                )))]
-                return Err(Error::HttpsFeatureNotEnabled);
-                #[cfg(any(feature = "rustls", feature = "openssl", feature = "native-tls"))]
-                return connection.send_https();
-            } else {
-                connection.send()
-            }
+            connection.send(request)
         }
-        NextHop::Destination(connection) => {
-            let dst_url = connection.request.url;
+        NextHop::Destination(_) => {
+            let dst_url = request.url;
             dst_url.write_base_url_to(&mut response.url).unwrap();
             dst_url.write_resource_to(&mut response.url).unwrap();
             Ok(response)
@@ -271,12 +388,17 @@ fn handle_redirects(
     }
 }
 
-enum NextHop {
-    Redirect(Result<Connection, Error>),
-    Destination(Connection),
+enum NextHop<T: Connection> {
+    Redirect(Result<T, Error>),
+    Destination(Result<T, Error>),
 }
 
-fn get_redirect(mut connection: Connection, status_code: i32, url: Option<&String>) -> NextHop {
+fn get_redirect<T: Connection>(
+    connection: T,
+    request: &mut ParsedRequest,
+    status_code: i32,
+    url: Option<&String>,
+) -> NextHop<T> {
     match status_code {
         301 | 302 | 303 | 307 => {
             let url = match url {
@@ -285,12 +407,12 @@ fn get_redirect(mut connection: Connection, status_code: i32, url: Option<&Strin
             };
             log::debug!("Redirecting ({}) to: {}", status_code, url);
 
-            match connection.request.redirect_to(url.as_str()) {
+            match request.redirect_to(url.as_str()) {
                 Ok(()) => {
                     if status_code == 303 {
-                        match connection.request.config.method {
+                        match request.config.method {
                             Method::Post | Method::Put | Method::Delete => {
-                                connection.request.config.method = Method::Get;
+                                request.config.method = Method::Get;
                             }
                             _ => {}
                         }
@@ -301,11 +423,14 @@ fn get_redirect(mut connection: Connection, status_code: i32, url: Option<&Strin
                 Err(err) => NextHop::Redirect(Err(err)),
             }
         }
-        _ => NextHop::Destination(connection),
+        _ => NextHop::Destination(Ok(connection)),
     }
 }
 
-fn ensure_ascii_host(host: String) -> Result<String, Error> {
+/// Ensure a given host string is valid ASCII. If it is not, and punycode feature is
+/// available, it will be converted to ascii. If punycode feature is disabled, returns
+/// a PunycodeFeatureNotEnabled error.
+pub fn ensure_ascii_host(host: String) -> Result<String, Error> {
     if host.is_ascii() {
         Ok(host)
     } else {
@@ -340,6 +465,7 @@ fn ensure_ascii_host(host: String) -> Result<String, Error> {
 /// While minreq does use timeouts (somewhat) properly, some
 /// interfaces such as [ToSocketAddrs] don't allow for specifying the
 /// timeout. Hence this.
+#[cfg(feature = "tcp")]
 fn enforce_timeout<F, R>(timeout_at: Option<Instant>, f: F) -> Result<R, Error>
 where
     F: 'static + Send + FnOnce() -> Result<R, Error>,
@@ -359,14 +485,14 @@ where
                 match receiver.recv_timeout(timeout_duration) {
                     Ok(()) => thread.join().unwrap(),
                     Err(err) => match err {
-                        RecvTimeoutError::Timeout => Err(Error::IoError(timeout_err())),
+                        RecvTimeoutError::Timeout => Err(Error::RequestTimedOut),
                         RecvTimeoutError::Disconnected => {
                             Err(Error::Other("request connection paniced"))
                         }
                     },
                 }
             } else {
-                Err(Error::IoError(timeout_err()))
+                Err(Error::RequestTimedOut)
             }
         }
         None => f(),

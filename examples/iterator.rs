@@ -3,7 +3,8 @@
 
 fn main() -> Result<(), minreq::Error> {
     let mut buffer = Vec::new();
-    for byte in minreq::get("http://example.com").send_lazy()? {
+    let conn = minreq::TCPConnection::new(None);
+    for byte in minreq::get("http://example.com").send_lazy(conn)? {
         // The connection could have a problem at any point during the
         // download, so each byte needs to be unwrapped.
         let (byte, len) = byte?;

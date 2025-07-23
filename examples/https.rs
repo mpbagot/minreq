@@ -1,8 +1,8 @@
 //! This is a simple example to demonstrate the usage of this library.
 
 fn main() -> Result<(), minreq::Error> {
-    let conn = minreq::TCPConnection::new(Some(1000));
-    let response = minreq::get("http://example.com").send(conn)?;
+    let conn = minreq::TLSConnection::new(None);
+    let response = minreq::get("https://example.com").send(conn)?;
     let html = response.as_str()?;
     println!("{}", html);
     Ok(())

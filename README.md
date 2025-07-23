@@ -4,8 +4,7 @@
 ![Unit tests](https://github.com/neonmoe/minreq/actions/workflows/unit-tests.yml/badge.svg)
 ![MSRV](https://github.com/neonmoe/minreq/actions/workflows/msrv.yml/badge.svg)
 
-Simple, minimal-dependency HTTP client. Optional features for json
-responses (`json-using-serde`), unicode domains (`punycode`), http
+Simple, minimal-dependency HTTP client. Optional features for unicode domains (`punycode`), http
 proxies (`proxy`), and https with various TLS implementations
 (`https-rustls`, `https-rustls-probe`, `https-bundled`,
 `https-bundled-probe`,`https-native`, and `https` which is an alias

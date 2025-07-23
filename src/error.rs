@@ -1,4 +1,12 @@
-use std::{error, fmt, io, str};
+#[cfg(not(feature = "tcp"))]
+use alloc::string::String;
+#[cfg(not(feature = "tcp"))]
+use core::{error, fmt, str};
+#[cfg(feature = "tcp")]
+use std::string::String;
+#[cfg(feature = "tcp")]
+use std::{error, fmt, str};
+// use core::error;
 
 /// Represents an error while sending, receiving, or parsing an HTTP response.
 #[derive(Debug)]
@@ -7,9 +15,6 @@ use std::{error, fmt, io, str};
 // what the user might want to handle? This error doesn't really invite graceful
 // handling.
 pub enum Error {
-    #[cfg(feature = "json-using-serde")]
-    /// Ran into a Serde error.
-    SerdeJsonError(serde_json::Error),
     /// The response body contains invalid UTF-8, so the `as_str()`
     /// conversion failed.
     InvalidUtf8InBody(str::Utf8Error),
@@ -17,9 +22,6 @@ pub enum Error {
     #[cfg(feature = "rustls")]
     /// Ran into a rustls error while creating the connection.
     RustlsCreateConnection(rustls::Error),
-    // TODO: Add separate errors for openssl and native_tls errors as well
-    /// Ran into an IO problem while loading the response.
-    IoError(io::Error),
     /// Couldn't parse the incoming chunk's length while receiving a
     /// response with the header `Transfer-Encoding: chunked`.
     MalformedChunkLength,
@@ -71,12 +73,15 @@ pub enum Error {
     ProxyConnect,
     /// The provided credentials were rejected by the proxy server.
     InvalidProxyCreds,
-    // TODO: Uncomment these two for 3.0
-    // /// The URL does not start with http:// or https://.
-    // InvalidProtocol,
-    // /// The URL ended up redirecting to an URL that does not start
-    // /// with http:// or https://.
-    // InvalidProtocolInRedirect,
+    /// The URL does not start with http:// or https://.
+    InvalidProtocol,
+    /// The URL ended up redirecting to an URL that does not start
+    /// with http:// or https://.
+    InvalidProtocolInRedirect,
+    /// Sending of a request timed out
+    RequestTimedOut,
+    /// An error from reading a stream
+    StreamReadError(String),
     /// This is a special error case, one that should never be
     /// returned! Think of this as a cleaner alternative to calling
     /// `unreachable!()` inside the library. If you come across this,
@@ -89,9 +94,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use Error::*;
         match self {
-            #[cfg(feature = "json-using-serde")]
-            SerdeJsonError(err) => write!(f, "{}", err),
-            IoError(err) => write!(f, "{}", err),
             InvalidUtf8InBody(err) => write!(f, "{}", err),
 
             #[cfg(feature = "rustls")]
@@ -113,9 +115,10 @@ impl fmt::Display for Error {
             BadProxyCreds => write!(f, "the provided proxy credentials are malformed"),
             ProxyConnect => write!(f, "could not connect to the proxy server"),
             InvalidProxyCreds => write!(f, "the provided proxy credentials are invalid"),
-            // TODO: Uncomment these two for 3.0
-            // InvalidProtocol => write!(f, "the url does not start with http:// or https://"),
-            // InvalidProtocolInRedirect => write!(f, "got redirected to an absolute url which does not start with http:// or https://"),
+            InvalidProtocol => write!(f, "the url does not start with http:// or https://"),
+            InvalidProtocolInRedirect => write!(f, "got redirected to an absolute url which does not start with http:// or https://"),
+            RequestTimedOut => write!(f, "the timeout of the request was reached"),
+            StreamReadError(msg) => write!(f, "{}", msg),
             Other(msg) => write!(f, "error in minreq: please open an issue in the minreq repo, include the following: '{}'", msg),
         }
     }
@@ -125,9 +128,6 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         use Error::*;
         match self {
-            #[cfg(feature = "json-using-serde")]
-            SerdeJsonError(err) => Some(err),
-            IoError(err) => Some(err),
             InvalidUtf8InBody(err) => Some(err),
             #[cfg(feature = "rustls")]
             RustlsCreateConnection(err) => Some(err),
@@ -136,8 +136,9 @@ impl error::Error for Error {
     }
 }
 
-impl From<io::Error> for Error {
-    fn from(other: io::Error) -> Error {
-        Error::IoError(other)
+#[cfg(feature = "tcp")]
+impl From<std::io::Error> for Error {
+    fn from(other: std::io::Error) -> Error {
+        Error::StreamReadError(other.to_string())
     }
 }

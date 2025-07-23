@@ -1,7 +1,16 @@
-use crate::{connection::HttpStream, Error};
-use std::collections::HashMap;
-use std::io::{self, BufReader, Bytes, Read};
-use std::str;
+use crate::connection::{CoreRead, HttpStream};
+use crate::Error;
+
+#[cfg(not(feature = "tcp"))]
+use crate::util::BufferReader;
+#[cfg(not(feature = "tcp"))]
+use alloc::{collections::BTreeMap, string::String, string::ToString, vec::Vec};
+#[cfg(not(feature = "tcp"))]
+use core::str;
+#[cfg(feature = "tcp")]
+use std::collections::BTreeMap;
+#[cfg(feature = "tcp")]
+use std::io::{BufReader, Bytes, Read};
 
 const BACKING_READ_BUFFER_LENGTH: usize = 16 * 1024;
 const MAX_CONTENT_LENGTH: usize = 16 * 1024;
@@ -26,7 +35,7 @@ pub struct Response {
     pub reason_phrase: String,
     /// The headers of the response. The header field names (the
     /// keys) are all lowercase.
-    pub headers: HashMap<String, String>,
+    pub headers: BTreeMap<String, String>,
     /// The URL of the resource returned in this response. May differ from the
     /// request URL if it was redirected or typo corrections were applied (e.g.
     /// <http://example.com?foo=bar> would be corrected to
@@ -127,45 +136,6 @@ impl Response {
     pub fn into_bytes(self) -> Vec<u8> {
         self.body
     }
-
-    /// Converts JSON body to a `struct` using Serde.
-    ///
-    /// # Errors
-    ///
-    /// Returns
-    /// [`SerdeJsonError`](enum.Error.html#variant.SerdeJsonError) if
-    /// Serde runs into a problem, or
-    /// [`InvalidUtf8InBody`](enum.Error.html#variant.InvalidUtf8InBody)
-    /// if the body is not UTF-8.
-    ///
-    /// # Example
-    /// In case compiler cannot figure out return type you might need to declare it explicitly:
-    ///
-    /// ```no_run
-    /// use serde_json::Value;
-    ///
-    /// # fn main() -> Result<(), minreq::Error> {
-    /// # let url_to_json_resource = "http://example.org/resource.json";
-    /// // Value could be any type that implements Deserialize!
-    /// let user = minreq::get(url_to_json_resource).send()?.json::<Value>()?;
-    /// println!("User name is '{}'", user["name"]);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "json-using-serde")]
-    pub fn json<'a, T>(&'a self) -> Result<T, Error>
-    where
-        T: serde::de::Deserialize<'a>,
-    {
-        let str = match self.as_str() {
-            Ok(str) => str,
-            Err(_) => return Err(Error::InvalidUtf8InResponse),
-        };
-        match serde_json::from_str(str) {
-            Ok(json) => Ok(json),
-            Err(err) => Err(Error::SerdeJsonError(err)),
-        }
-    }
 }
 
 /// An HTTP response, which is loaded lazily.
@@ -211,7 +181,7 @@ pub struct ResponseLazy {
     pub reason_phrase: String,
     /// The headers of the response. The header field names (the
     /// keys) are all lowercase.
-    pub headers: HashMap<String, String>,
+    pub headers: BTreeMap<String, String>,
     /// The URL of the resource returned in this response. May differ from the
     /// request URL if it was redirected or typo corrections were applied (e.g.
     /// <http://example.com?foo=bar> would be corrected to
@@ -223,15 +193,23 @@ pub struct ResponseLazy {
     max_trailing_headers_size: Option<usize>,
 }
 
+#[cfg(not(feature = "tcp"))]
+type HttpStreamBytes = BufferReader<HttpStream>;
+#[cfg(feature = "tcp")]
 type HttpStreamBytes = Bytes<BufReader<HttpStream>>;
 
 impl ResponseLazy {
-    pub(crate) fn from_stream(
+    /// Construct a lazy response object from an HTTPStream. This constructor should be used
+    /// by implementations of the Connection trait to return the necessary object.
+    pub fn from_stream(
         stream: HttpStream,
         max_headers_size: Option<usize>,
         max_status_line_len: Option<usize>,
     ) -> Result<ResponseLazy, Error> {
+        #[cfg(feature = "tcp")]
         let mut stream = BufReader::with_capacity(BACKING_READ_BUFFER_LENGTH, stream).bytes();
+        #[cfg(not(feature = "tcp"))]
+        let mut stream = BufferReader::new(BACKING_READ_BUFFER_LENGTH, stream);
         let ResponseMetadata {
             status_code,
             reason_phrase,
@@ -274,16 +252,13 @@ impl Iterator for ResponseLazy {
     }
 }
 
-impl Read for ResponseLazy {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+impl CoreRead for ResponseLazy {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         let mut index = 0;
         for res in self {
             // there is no use for the estimated length in the read implementation
             // so it is ignored.
-            let (byte, _) = res.map_err(|e| match e {
-                Error::IoError(e) => e,
-                _ => io::Error::new(io::ErrorKind::Other, e),
-            })?;
+            let (byte, _) = res?;
 
             buf[index] = byte;
             index += 1;
@@ -303,7 +278,7 @@ fn read_until_closed(bytes: &mut HttpStreamBytes) -> Option<<ResponseLazy as Ite
     if let Some(byte) = bytes.next() {
         match byte {
             Ok(byte) => Some(Ok((byte, 1))),
-            Err(err) => Some(Err(Error::IoError(err))),
+            Err(err) => Some(Err(Error::StreamReadError(err.to_string()))),
         }
     } else {
         None
@@ -321,7 +296,7 @@ fn read_with_content_length(
             match byte {
                 // Cap Content-Length to 16KiB, to avoid out-of-memory issues.
                 Ok(byte) => return Some(Ok((byte, (*content_length).min(MAX_CONTENT_LENGTH) + 1))),
-                Err(err) => return Some(Err(Error::IoError(err))),
+                Err(err) => return Some(Err(Error::StreamReadError(err.to_string()))),
             }
         }
     }
@@ -330,7 +305,7 @@ fn read_with_content_length(
 
 fn read_trailers(
     bytes: &mut HttpStreamBytes,
-    headers: &mut HashMap<String, String>,
+    headers: &mut BTreeMap<String, String>,
     mut max_headers_size: Option<usize>,
 ) -> Result<(), Error> {
     loop {
@@ -349,7 +324,7 @@ fn read_trailers(
 
 fn read_chunked(
     bytes: &mut HttpStreamBytes,
-    headers: &mut HashMap<String, String>,
+    headers: &mut BTreeMap<String, String>,
     expecting_more_chunks: &mut bool,
     chunk_length: &mut usize,
     content_length: &mut usize,
@@ -421,7 +396,7 @@ fn read_chunked(
 
                     return Some(Ok((byte, (*chunk_length).min(MAX_CONTENT_LENGTH) + 1)));
                 }
-                Err(err) => return Some(Err(Error::IoError(err))),
+                Err(err) => return Some(Err(Error::StreamReadError(err.to_string()))),
             }
         }
     }
@@ -451,7 +426,7 @@ enum HttpStreamState {
 struct ResponseMetadata {
     status_code: i32,
     reason_phrase: String,
-    headers: HashMap<String, String>,
+    headers: BTreeMap<String, String>,
     state: HttpStreamState,
     max_trailing_headers_size: Option<usize>,
 }
@@ -464,7 +439,7 @@ fn read_metadata(
     let line = read_line(stream, max_status_line_len, Error::StatusLineOverflow)?;
     let (status_code, reason_phrase) = parse_status_line(&line);
 
-    let mut headers = HashMap::new();
+    let mut headers = BTreeMap::new();
     loop {
         let line = read_line(stream, max_headers_size, Error::HeadersOverflow)?;
         if line.is_empty() {
@@ -538,7 +513,7 @@ fn read_line(
                     bytes.push(byte);
                 }
             }
-            Err(err) => return Err(Error::IoError(err)),
+            Err(err) => return Err(Error::StreamReadError(err.to_string())),
         }
     }
     String::from_utf8(bytes).map_err(|_error| Error::InvalidUtf8InResponse)
