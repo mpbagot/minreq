@@ -3,7 +3,6 @@
 fn main() -> Result<(), minreq::Error> {
     let conn = minreq::TCPConnection::new(Some(1000));
     let response = minreq::get("http://example.com").send(conn)?;
-    let html = response.as_str()?;
-    println!("{}", html);
+    println!("{}", response.as_str()?);
     Ok(())
 }

@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [2.14.0] - 2025-06-27
 ### Changed
 - `https-bundled`, `https-bundled-probe`: Removed almost all of the bundled
   native-tls code (~1k LoC), only keeping the relevant part (~30 LoC). There
@@ -18,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `build.rs`, which turned out to be dead code. This should have no
   effect, but if it does, it should also only affect the `https-bundled` and
   `https-bundled-probe` features.
+
+### Added
+- `Request::with_follow_redirects` for disabling redirection handling. Thanks
+  for the suggestion, @tachibanayui!
+  ([#120](https://github.com/neonmoe/minreq/issues/120))
 
 ## [2.13.4] - 2025-04-11
 ### Fixed

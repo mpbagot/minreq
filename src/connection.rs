@@ -400,7 +400,7 @@ fn get_redirect<T: Connection>(
     url: Option<&String>,
 ) -> NextHop<T> {
     match status_code {
-        301 | 302 | 303 | 307 => {
+        301 | 302 | 303 | 307 if request.config.follow_redirects => {
             let url = match url {
                 Some(url) => url,
                 None => return NextHop::Redirect(Err(Error::RedirectLocationMissing)),
