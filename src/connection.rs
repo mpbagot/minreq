@@ -33,7 +33,7 @@ pub trait CoreRead: Send {
 /// To make a HTTPStream, you need to implement the trait CoreRead. If you already
 /// have an object that implements std::io::Read, you can wrap it with CoreReader to
 /// automatically implement the required CoreRead trait.
-pub struct CoreReader<T: std::io::Read>(T);
+pub struct CoreReader<T: std::io::Read>(pub T);
 #[cfg(feature = "tcp")]
 impl<T: std::io::Read + Send> CoreRead for CoreReader<T> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {

@@ -116,7 +116,8 @@
 //!
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let response = minreq::get("http://example.com").send()?;
+//! let conn = minreq::TCPConnection::new(None);
+//! let response = minreq::get("http://example.com").send(conn)?;
 //! assert!(response.as_str()?.contains("</html>"));
 //! assert_eq!(200, response.status_code);
 //! assert_eq!("OK", response.reason_phrase);
@@ -134,9 +135,10 @@
 //!
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let conn = minreq::TCPConnection::new(None);
 //! let response = minreq::post("http://example.com")
 //!     .with_body("Foobar")
-//!     .send()?;
+//!     .send(conn)?;
 //! # Ok(()) }
 //! ```
 //!
@@ -147,9 +149,10 @@
 //!
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let conn = minreq::TCPConnection::new(None);
 //! let response = minreq::get("http://example.com")
 //!     .with_header("Accept", "text/html")
-//!     .send()?;
+//!     .send(conn)?;
 //! # Ok(()) }
 //! ```
 //!
@@ -164,7 +167,8 @@
 //!
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let response = minreq::get("http://example.com").send()?;
+//! let conn = minreq::TCPConnection::new(None);
+//! let response = minreq::get("http://example.com").send(conn)?;
 //! assert!(response.headers.get("content-type").unwrap().starts_with("text/html"));
 //! # Ok(()) }
 //! ```
@@ -178,9 +182,10 @@
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let conn = minreq::TCPConnection::new(Some(10));
 //! let response = minreq::post("http://example.com")
 //!     .with_timeout(10)
-//!     .send()?;
+//!     .send(conn)?;
 //! # Ok(()) }
 //! ```
 //!
@@ -197,10 +202,11 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! #[cfg(feature = "proxy")]
 //! {
+//!     let conn = minreq::TCPConnection::new(None);
 //!     let proxy = minreq::Proxy::new("localhost:8080")?;
 //!     let response = minreq::post("http://example.com")
 //!         .with_proxy(proxy)
-//!         .send()?;
+//!         .send(conn)?;
 //!     println!("{}", response.as_str()?);
 //! }
 //! # Ok(()) }
@@ -214,7 +220,8 @@
 //! - Use [`with_timeout`](struct.Request.html#method.with_timeout) on
 //!   your request to set the timeout per-request like so:
 //!   ```
-//!   minreq::get("/").with_timeout(8).send();
+//!   let conn = minreq::TCPConnection::new(Some(8));
+//!   minreq::get("/").with_timeout(8).send(conn);
 //!   ```
 //! - Set the environment variable `MINREQ_TIMEOUT` to the desired
 //!   amount of seconds until timeout. Ie. if you have a program called

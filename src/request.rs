@@ -377,7 +377,8 @@ impl ParsedRequest {
         })
     }
 
-    fn get_http_head(&self) -> String {
+    /// Get the header content text as a newly allocatetd String
+    pub fn get_http_head(&self) -> String {
         let mut http = String::with_capacity(32);
 
         // NOTE: As of 2.10.0, the fragment is intentionally left out of the request, based on:
@@ -393,7 +394,8 @@ impl ParsedRequest {
         http
     }
 
-    fn head_to_buf<T: Write>(&self, http: &mut T) {
+    /// Write the header content text to a Write'able buffer
+    pub fn head_to_buf<T: Write>(&self, http: &mut T) {
         // Add the request line and the "Host" header
         write!(
             http,
@@ -437,7 +439,7 @@ impl ParsedRequest {
 
     /// Returns the HTTP request as bytes, ready to be sent to
     /// the server.
-    pub(crate) fn as_bytes(&self) -> Vec<u8> {
+    pub fn as_bytes(&self) -> Vec<u8> {
         let mut head = self.get_http_head().into_bytes();
         if let Some(body) = &self.config.body {
             head.extend(body);
@@ -446,7 +448,7 @@ impl ParsedRequest {
     }
 
     /// Write the HTTP request as bytes to a preallocated buffer
-    pub(crate) fn fill_buffer(&self, buf: &mut Vec<u8>) -> () {
+    pub fn fill_buffer(&self, buf: &mut Vec<u8>) -> () {
         let mut writer_buf = VecWriter::new(buf);
         self.head_to_buf(&mut writer_buf);
         // Now that the header is done, add
@@ -458,7 +460,7 @@ impl ParsedRequest {
     /// Returns the redirected version of this Request, unless an
     /// infinite redirection loop was detected, or the redirection
     /// limit was reached.
-    pub(crate) fn redirect_to(&mut self, url: &str) -> Result<(), Error> {
+    pub fn redirect_to(&mut self, url: &str) -> Result<(), Error> {
         if url.contains("://") {
             let mut url = HttpUrl::parse(url, Some(&self.url))
                 .map_err(|_| Error::InvalidProtocolInRedirect)?;
@@ -546,8 +548,8 @@ pub fn patch<T: Into<URL>>(url: T) -> Request {
 #[cfg(test)]
 mod parsing_tests {
 
-    use alloc::collections::BTreeMap;
-    use alloc::string::ToString;
+    use std::collections::BTreeMap;
+    use std::string::ToString;
 
     use super::{get, ParsedRequest};
 

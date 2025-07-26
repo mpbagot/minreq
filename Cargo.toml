@@ -53,14 +53,25 @@ proxy = ["base64", "tcp"]
 
 [[example]]
 name = "hello"
+required-features = ["tcp"]
 
 [[example]]
 name = "byte_buf"
+required-features = ["tcp"]
 
 [[example]]
 name = "https"
+required-features = ["https"]
 
 [[example]]
 name = "iterator"
+required-features = ["tcp"]
+
+[[example]]
+name = "std_conn"
+required-features = ["tcp"]
+
+[[example]]
+name = "nostd_conn"
 
 # vim: ft=conf

@@ -23,7 +23,8 @@ const MAX_CONTENT_LENGTH: usize = 16 * 1024;
 ///
 /// ```no_run
 /// # fn main() -> Result<(), minreq::Error> {
-/// let response = minreq::get("http://example.com").send()?;
+/// let conn = minreq::TCPConnection::new(None);
+/// let response = minreq::get("http://example.com").send(conn)?;
 /// println!("{}", response.as_str()?);
 /// # Ok(()) }
 /// ```
@@ -87,7 +88,8 @@ impl Response {
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let url = "http://example.org/";
-    /// let response = minreq::get(url).send()?;
+    /// let conn = minreq::TCPConnection::new(None);
+    /// let response = minreq::get(url).send(conn)?;
     /// println!("{}", response.as_str()?);
     /// # Ok(())
     /// # }
@@ -108,7 +110,8 @@ impl Response {
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let url = "http://example.org/";
-    /// let response = minreq::get(url).send()?;
+    /// let conn = minreq::TCPConnection::new(None);
+    /// let response = minreq::get(url).send(conn)?;
     /// println!("{:?}", response.as_bytes());
     /// # Ok(())
     /// # }
@@ -126,7 +129,8 @@ impl Response {
     /// ```no_run
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let url = "http://example.org/";
-    /// let response = minreq::get(url).send()?;
+    /// let conn = minreq::TCPConnection::new(None);
+    /// let response = minreq::get(url).send(conn)?;
     /// println!("{:?}", response.into_bytes());
     /// // This would error, as into_bytes consumes the Response:
     /// // let x = response.status_code;
@@ -163,7 +167,8 @@ impl Response {
 /// // This is how the normal Response works behind the scenes, and
 /// // how you might use ResponseLazy.
 /// # fn main() -> Result<(), minreq::Error> {
-/// let response = minreq::get("http://example.com").send_lazy()?;
+/// let conn = minreq::TCPConnection::new(None);
+/// let response = minreq::get("http://example.com").send_lazy(conn)?;
 /// let mut vec = Vec::new();
 /// for result in response {
 ///     let (byte, length) = result?;

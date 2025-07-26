@@ -1,9 +1,9 @@
-#[cfg(feature = "tcp")]
-use std::{string::String, fmt::self, fmt::Write};
-#[cfg(not(feature = "tcp"))]
-use core::fmt::{self, Write};
 #[cfg(not(feature = "tcp"))]
 use alloc::string::String;
+#[cfg(not(feature = "tcp"))]
+use core::fmt::{self, Write};
+#[cfg(feature = "tcp")]
+use std::{fmt, fmt::Write, string::String};
 
 use crate::Error;
 

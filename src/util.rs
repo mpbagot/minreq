@@ -35,7 +35,8 @@ pub(crate) struct BufferReader<T: CoreRead> {
 #[cfg(not(feature = "tcp"))]
 impl<T: CoreRead> BufferReader<T> {
     pub(crate) fn new(max_size: usize, stream: T) -> BufferReader<T> {
-        let backer = Vec::with_capacity(max_size);
+        let mut backer = Vec::with_capacity(max_size);
+        backer.resize(max_size, 0);
         BufferReader {
             backing_stream: stream,
             backing_buffer: backer,
@@ -52,8 +53,9 @@ impl<T: CoreRead> Iterator for BufferReader<T> {
         // TODO if index < baacking_buffer size, clear and read more.
         if self.index >= self.backing_buffer.len() {
             let stream = &mut self.backing_stream;
-            let buf = &mut self.backing_buffer;
-            let _ = CoreRead::read(stream, buf);
+            let buf = self.backing_buffer.as_mut_slice();
+            let new_size = CoreRead::read(stream, buf).ok()?;
+            self.backing_buffer.resize(new_size, 0); // Force the buffer to have a length equal to the current buffer content
             self.index = 0;
         }
         if self.index < self.backing_buffer.len() {
