@@ -15,7 +15,7 @@
 //! # Additional features
 //!
 //! Since the crate is supposed to be minimal in terms of
-//! dependencies, there are no default features, with the create compiling as no_std
+//! dependencies, there are no default features, with the crate compiling as no_std
 //! when optional functionality is not enabled. Optional
 //! functionality can be enabled by specifying features for `minreq`
 //! dependency in `Cargo.toml`:
@@ -113,6 +113,8 @@
 //! the response's body, status code, and reason phrase. The `?` are
 //! needed because the server could return invalid UTF-8 in the body,
 //! or something could go wrong during the download.
+//! In order to send a request, an object implementing the Connection
+//! trait must be consumed by the send() method on the request.
 //!
 //! ```
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -161,7 +163,7 @@
 //! Reading the headers sent by the servers is done via the
 //! [`headers`](struct.Response.html#structfield.headers) field of the
 //! [`Response`](struct.Response.html). Note: the header field names
-//! (that is, the *keys* of the `HashMap`) are all lowercase: this is
+//! (that is, the *keys* of the `BTreeMap`) are all lowercase: this is
 //! because the names are case-insensitive according to the spec, and
 //! this unifies the casings for easier `get()`ing.
 //!
@@ -179,6 +181,10 @@
 //! `with_timeout(n)` before `send()`. The given value is in seconds.
 //!
 //! NOTE: There is no timeout by default.
+//!
+//! OTHER NOTE: Timeout functionality is Connection implementation-dependent.
+//! The provided TLSConnection and TCPConnection traits implement timeouts, but
+//! any custom Connection implementations must implement this functionality itself.
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {

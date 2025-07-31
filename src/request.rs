@@ -280,7 +280,6 @@ impl Request {
     /// request, or receiving/parsing the response. The specific error
     /// is described in the `Err`, and it can be any
     /// [`minreq::Error`](enum.Error.html) except
-    /// [`SerdeJsonError`](enum.Error.html#variant.SerdeJsonError) and
     /// [`InvalidUtf8InBody`](enum.Error.html#variant.InvalidUtf8InBody).
     pub fn send<T: Connection>(self, conn: T) -> Result<Response, Error> {
         let parsed_request = ParsedRequest::new(self)?;
@@ -308,9 +307,9 @@ impl Request {
     }
 }
 
-/// A parsed out request. Mainly a wrapper arround Request with a properly parsed url.
+/// A parsed out request. Mainly a wrapper around Request with a properly parsed url.
 /// Required for [`Connection::send()`](trait.Connection.html#method.send) to
-/// produce a final ResponseLazy. Should not be constructed manually, but should only be
+/// produce a final ResponseLazy. These should not be constructed manually, but should only be
 /// instantiated through Request instance methods.
 pub struct ParsedRequest {
     /// The url of the request
